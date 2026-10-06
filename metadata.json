@@ -1,0 +1,6 @@
+{
+  "name": "DK Diagnóstico Industrial IA",
+  "description": "Plataforma profissional de diagnóstico de falhas industriais, monitoramento de máquinas e análise preditiva com inteligência artificial.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
