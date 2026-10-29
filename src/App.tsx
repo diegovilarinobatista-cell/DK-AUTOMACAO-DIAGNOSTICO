@@ -12,6 +12,9 @@ import { AddMachineModal } from './components/AddMachineModal';
 import { ActivityScheduler } from './components/ActivityScheduler';
 import { NewActivityModal } from './components/NewActivityModal';
 import { LoginScreen } from './components/LoginScreen';
+import { supabase } from './lib/supabase';
+import { useCloudSync } from './lib/cloudSync';
+import type { Session } from '@supabase/supabase-js';
 import { DEMO_MACHINES, DEMO_FAILURES, DEMO_SCHEDULED_ACTIVITIES } from './data/mockData';
 import { IndustrialFailure, Machine, ScheduledActivity } from './types';
 import { useTranslation } from './i18n/LanguageContext';
@@ -46,14 +49,16 @@ import {
 export default function App() {
   const { t } = useTranslation();
 
-  // Authentication State with password '01dkautomacao'
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('dk_auth_token') === '01dkautomacao_authenticated';
-  });
-
-  const [currentUser, setCurrentUser] = useState<string>(() => {
-    return localStorage.getItem('dk_auth_user') || 'Técnico DK';
-  });
+  // Authentication (Supabase Auth)
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+  const isAuthenticated = !!session;
+  const currentUser = session?.user?.email || 'Técnico DK';
 
   // Navigation & Modals
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -143,16 +148,16 @@ export default function App() {
     localStorage.setItem('dk_user_activities', JSON.stringify(activities));
   }, [activities]);
 
-  // Auth Handlers
-  const handleLoginSuccess = (userIdentifier: string) => {
-    setIsAuthenticated(true);
-    setCurrentUser(userIdentifier);
-  };
+  // Cloud sync (Supabase, RLS per user)
+  const { status: syncStatus } = useCloudSync(
+    session?.user?.id ?? null,
+    { machine: machines, failure: failures, activity: activities },
+    { machine: setMachines, failure: setFailures, activity: setActivities },
+  );
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     alarmAudioService.stopAlarm();
-    localStorage.removeItem('dk_auth_token');
-    setIsAuthenticated(false);
+    await supabase.auth.signOut();
   };
 
   // Zeroing & Demo Data Handlers
@@ -345,12 +350,28 @@ export default function App() {
   const isDataZeroed = machines.length === 0 && failures.length === 0 && activities.length === 0;
 
   // If not authenticated, display the Login Screen
+  if (!authReady) {
+    return <div className="min-h-screen bg-slate-950" />;
+  }
   if (!isAuthenticated) {
-    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+    return <LoginScreen />;
   }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
+      {/* Cloud sync indicator */}
+      <div
+        className={`fixed bottom-3 left-3 z-40 px-2.5 py-1 rounded-full text-[10px] font-bold border backdrop-blur ${
+          syncStatus === 'error' ? 'bg-rose-950/80 border-rose-700 text-rose-300'
+          : syncStatus === 'offline' ? 'bg-amber-950/80 border-amber-700 text-amber-300'
+          : syncStatus === 'saving' || syncStatus === 'loading' ? 'bg-slate-900/80 border-slate-700 text-slate-300'
+          : 'bg-emerald-950/70 border-emerald-800 text-emerald-300'
+        }`}
+        title={currentUser}
+      >
+        {syncStatus === 'error' ? '● Erro ao salvar na nuvem' : syncStatus === 'offline' ? '● Offline — salvo no aparelho'
+          : syncStatus === 'saving' ? '● Salvando…' : syncStatus === 'loading' ? '● Carregando…' : '● Salvo na nuvem'}
+      </div>
       {/* Industrial Top Navbar */}
       <Navbar
         onNewDiagnostic={() => handleOpenDiagnostic()}

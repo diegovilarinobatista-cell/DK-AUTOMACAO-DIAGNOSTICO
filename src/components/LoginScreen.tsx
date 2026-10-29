@@ -1,33 +1,75 @@
 import React, { useState } from 'react';
 import { useTranslation } from '../i18n/LanguageContext';
 import { LanguageSelector } from './LanguageSelector';
+import { supabase } from '../lib/supabase';
 import { Lock, User, Eye, EyeOff, ShieldCheck, Cpu, ArrowRight, AlertCircle, KeyRound } from 'lucide-react';
 
-interface LoginScreenProps {
-  onLoginSuccess: (userIdentifier: string) => void;
-}
+type Mode = 'signin' | 'signup' | 'reset';
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
-  const { t } = useTranslation();
+const L: Record<string, Record<string, string>> = {
+  pt: {
+    email: 'E-mail', emailPh: 'voce@empresa.com', pass: 'Senha', passPh: 'Mínimo 8 caracteres',
+    signin: 'ENTRAR', signup: 'CRIAR CONTA', reset: 'ENVIAR LINK DE RECUPERAÇÃO',
+    toSignup: 'Não tem conta? Criar conta grátis', toSignin: 'Já tem conta? Entrar', forgot: 'Esqueci minha senha',
+    titleSignup: 'Criar conta', titleReset: 'Recuperar senha',
+    checkEmail: 'Enviamos um e-mail de confirmação. Abra o link e depois entre aqui.',
+    resetSent: 'Se o e-mail existir, enviamos um link para redefinir a senha.',
+    badLogin: 'E-mail ou senha incorretos.', shortPass: 'A senha precisa ter pelo menos 8 caracteres.',
+    notice: 'Seus dados ficam na sua conta, isolados por usuário.',
+  },
+  en: {
+    email: 'Email', emailPh: 'you@company.com', pass: 'Password', passPh: 'At least 8 characters',
+    signin: 'SIGN IN', signup: 'CREATE ACCOUNT', reset: 'SEND RESET LINK',
+    toSignup: 'No account? Create one for free', toSignin: 'Already have an account? Sign in', forgot: 'Forgot password',
+    titleSignup: 'Create account', titleReset: 'Reset password',
+    checkEmail: 'We sent a confirmation email. Open the link, then sign in here.',
+    resetSent: 'If the email exists, we sent a password reset link.',
+    badLogin: 'Wrong email or password.', shortPass: 'Password must be at least 8 characters.',
+    notice: 'Your data stays in your account, isolated per user.',
+  },
+  es: {
+    email: 'Correo', emailPh: 'tu@empresa.com', pass: 'Contraseña', passPh: 'Mínimo 8 caracteres',
+    signin: 'ENTRAR', signup: 'CREAR CUENTA', reset: 'ENVIAR ENLACE',
+    toSignup: '¿No tienes cuenta? Créala gratis', toSignin: '¿Ya tienes cuenta? Entrar', forgot: 'Olvidé mi contraseña',
+    titleSignup: 'Crear cuenta', titleReset: 'Recuperar contraseña',
+    checkEmail: 'Te enviamos un correo de confirmación. Abre el enlace y luego entra aquí.',
+    resetSent: 'Si el correo existe, enviamos un enlace para restablecer la contraseña.',
+    badLogin: 'Correo o contraseña incorrectos.', shortPass: 'La contraseña debe tener al menos 8 caracteres.',
+    notice: 'Tus datos quedan en tu cuenta, aislados por usuario.',
+  },
+};
+
+export const LoginScreen: React.FC = () => {
+  const { t, language } = useTranslation();
+  const tx = (k: string) => (L[language] || L.pt)[k] ?? L.pt[k];
+  const [mode, setMode] = useState<Mode>('signin');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rememberMe, setRememberMe] = useState(true);
+  const [info, setInfo] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(null);
-
-    const cleanPass = password.trim();
-    if (cleanPass === '01dkautomacao') {
-      if (rememberMe) {
-        localStorage.setItem('dk_auth_token', '01dkautomacao_authenticated');
-        localStorage.setItem('dk_auth_user', username || 'Técnico DK');
+    setError(null); setInfo(null);
+    const email = username.trim();
+    if (mode !== 'reset' && password.length < 8 && mode === 'signup') { setError(tx('shortPass')); return; }
+    setBusy(true);
+    try {
+      if (mode === 'signin') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) setError(tx('badLogin'));
+      } else if (mode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin } });
+        if (error) setError(error.message);
+        else if (!data.session) { setInfo(tx('checkEmail')); setMode('signin'); }
+      } else {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+        if (error) setError(error.message); else setInfo(tx('resetSent'));
       }
-      onLoginSuccess(username || 'Técnico DK');
-    } else {
-      setError(t('loginError'));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -65,7 +107,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               <Lock className="w-7 h-7" />
             </div>
             <h1 className="text-xl sm:text-2xl font-black tracking-tight text-white">
-              {t('loginTitle')}
+              {mode === 'signin' ? t('loginTitle') : mode === 'signup' ? tx('titleSignup') : tx('titleReset')}
             </h1>
             <p className="text-xs text-slate-400">
               {t('loginSubtitle')}
@@ -75,6 +117,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           {/* Form */}
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Error notice */}
+            {info && (
+              <div className="p-3 rounded-lg bg-emerald-950/60 border border-emerald-800 text-emerald-300 text-xs">{info}</div>
+            )}
             {error && (
               <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center gap-2 animate-shake">
                 <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
@@ -86,24 +131,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                 <User className="w-3.5 h-3.5 text-blue-400" />
-                {t('userLabel')}
+                {tx('email')}
               </label>
               <input
-                type="text"
+                type="email"
+                autoComplete="email"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder={t('userPlaceholder')}
+                placeholder={tx('emailPh')}
                 className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono transition-colors"
                 required
               />
             </div>
 
             {/* Password input */}
-            <div className="space-y-1.5">
+            {mode !== 'reset' && <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                   <KeyRound className="w-3.5 h-3.5 text-blue-400" />
-                  {t('passwordLabel')}
+                  {tx('pass')}
                 </label>
               </div>
 
@@ -115,7 +161,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                     setPassword(e.target.value);
                     if (error) setError(null);
                   }}
-                  placeholder={t('passwordPlaceholder')}
+                  placeholder={tx('passPh')}
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                   className="w-full pl-3.5 pr-10 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-mono transition-colors"
                   required
                 />
@@ -128,38 +175,37 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-            </div>
+            </div>}
 
-            {/* Remember me option */}
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                type="checkbox"
-                id="remember"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="w-4 h-4 rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-slate-900 cursor-pointer"
-              />
-              <label htmlFor="remember" className="text-xs text-slate-300 cursor-pointer select-none">
-                {t('rememberMe')}
-              </label>
+            <div className="flex items-center justify-between pt-1 text-xs">
+              {mode === 'signin' ? (
+                <button type="button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }} className="text-slate-400 hover:text-white">{tx('forgot')}</button>
+              ) : <span />}
             </div>
 
             {/* Submit Button */}
             <button
               type="submit"
               id="btn-login-submit"
-              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg shadow-blue-700/30 flex items-center justify-center gap-2 text-xs uppercase tracking-wider transition-all duration-150 active:scale-98 cursor-pointer mt-2"
+              disabled={busy}
+              className="w-full disabled:opacity-60 bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-4 rounded-xl shadow-lg shadow-blue-700/30 flex items-center justify-center gap-2 text-xs uppercase tracking-wider transition-all duration-150 active:scale-98 cursor-pointer mt-2"
             >
-              <span>{t('loginButton')}</span>
+              <span>{mode === 'signin' ? tx('signin') : mode === 'signup' ? tx('signup') : tx('reset')}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
+
+          <div className="text-center">
+            <button type="button" onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setError(null); setInfo(null); }} className="text-xs font-semibold text-blue-400 hover:text-blue-300">
+              {mode === 'signin' ? tx('toSignup') : tx('toSignin')}
+            </button>
+          </div>
 
           {/* Security statement */}
           <div className="pt-2 border-t border-slate-800 text-center">
             <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>{t('secureNotice')}</span>
+              <span>{tx('notice')}</span>
             </p>
           </div>
         </div>
@@ -167,7 +213,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
       {/* Footer */}
       <footer className="px-4 py-3 text-center text-xs text-slate-500 border-t border-slate-900 z-10">
-        <p>DK Automação Industrial • Versão 2.4.0 • Slogan: &ldquo;{t('slogan')}&rdquo;</p>
+        <p>DK Automação Industrial • &ldquo;{t('slogan')}&rdquo;</p>
       </footer>
     </div>
   );

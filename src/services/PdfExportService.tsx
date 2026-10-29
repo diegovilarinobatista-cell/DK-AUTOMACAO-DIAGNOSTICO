@@ -21,6 +21,8 @@ export interface DiagnosticReportOptions {
     confidenceLevel?: string;
     confidenceScore?: number; // e.g. 94%
     aiSummary?: string;
+    source?: 'ai' | 'rules';
+    fullAnalysis?: string;
     actionPlan?: Array<{
       type: 'Imediata' | 'Corretiva' | 'Preventiva';
       action: string;
@@ -359,15 +361,14 @@ export class PdfExportService {
     doc.setTextColor(...colors.accentCyan);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
-    doc.text('3. DIAGNÓSTICO DE CAUSA RAIZ PREDITIVO (DK IA)', margin, currentY);
+    doc.text(aiAnalysis?.source === 'ai' ? '3. DIAGNÓSTICO ASSISTIDO POR IA (DK)' : '3. DIAGNÓSTICO POR REGRAS TÉCNICAS (DK)', margin, currentY);
     currentY += 2;
 
-    const confidenceScore = aiAnalysis?.confidenceScore || 94;
-    const confidenceText = aiAnalysis?.confidenceLevel || 'ALTA CONFIABILIDADE (94%)';
-    const rootCauseText =
-      aiAnalysis?.rootCause ||
-      failure.probableCause ||
-      'Falha no Chopper de Frenagem do Inversor / Circuito do Resistor de Frenagem Aberto';
+    const confidenceText = aiAnalysis?.confidenceLevel || 'NÃO AVALIADA';
+    const sourceText = aiAnalysis?.source === 'ai'
+      ? 'Análise gerada por IA a partir dos dados informados pelo técnico. Hipóteses devem ser confirmadas com os testes.'
+      : 'Análise gerada pelo motor de regras DK (sem IA). Hipóteses devem ser confirmadas com os testes.';
+    const rootCauseText = aiAnalysis?.rootCause || failure.probableCause || 'Não determinada';
 
     autoTable(doc, {
       startY: currentY,
@@ -376,8 +377,9 @@ export class PdfExportService {
       body: [
         [
           {
-            content: `CAUSA RAIZ IDENTIFICADA PELA IA:\n${rootCauseText}\n\n` +
-              `NÍVEL DE CONFIANÇA DO MODELO: ${confidenceText} [Baseado em correlação de ${confidenceScore}% com histórico de falhas similares e medições registradas]`,
+            content: `CAUSA PROVÁVEL (HIPÓTESE PRINCIPAL):\n${rootCauseText}\n\n` +
+              `NÍVEL DE CONFIANÇA: ${confidenceText}\n${sourceText}` +
+              (aiAnalysis?.fullAnalysis ? `\n\n${aiAnalysis.fullAnalysis}` : ''),
             styles: {
               fillColor: [240, 249, 255],
               textColor: [12, 74, 110],
@@ -422,7 +424,7 @@ export class PdfExportService {
       },
     ];
 
-    const testsToRender = guidedTests.length > 0 ? guidedTests : defaultTests;
+    const testsToRender = guidedTests.length > 0 ? guidedTests : [{ test: 'Nenhum teste registrado', result: 'untested', method: '-', expected: '-', notes: '' } as GuidedTestItem];
 
     autoTable(doc, {
       startY: currentY,

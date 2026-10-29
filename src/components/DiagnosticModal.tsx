@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { IndustrialFailure, Machine, FailureSeverity } from '../types';
 import { useTranslation } from '../i18n/LanguageContext';
 import { PdfExportService } from '../services/PdfExportService';
+import { supabase } from '../lib/supabase';
 import {
   generateDiagnosticPlan,
   GuidedTask,
@@ -50,7 +51,14 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
   currentLocation = 'Linha 01 - Usinagem de Precisão',
   onSaveDiagnostic,
 }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
+
+  // AI analysis state
+  const [aiSource, setAiSource] = useState<'rules' | 'ai'>('rules');
+  const [aiConfidence, setAiConfidence] = useState<'ALTA' | 'MEDIA' | 'BAJA' | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
 
   // Form states
   const [selectedMachineId, setSelectedMachineId] = useState<string>(
@@ -128,6 +136,9 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
   useEffect(() => {
     const plan = generateDiagnosticPlan(resolvedMachineName, errorCode, symptom);
     setDiagnosticPlan(plan);
+    setAiSource('rules');
+    setAiConfidence(null);
+    setAiAnalysis('');
     setTasks((prev) => {
       return plan.tasks.map((newTask, idx) => {
         const existing = prev[idx];
@@ -143,6 +154,9 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
     const plan = generateDiagnosticPlan(resolvedMachineName, errorCode, symptom);
     setDiagnosticPlan(plan);
     setTasks(plan.tasks);
+    setAiSource('rules');
+    setAiConfidence(null);
+    setAiAnalysis('');
     setHasUserCustomizedTasks(false);
     setEditingTaskId(null);
   };
@@ -248,10 +262,7 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
         const dataUrl = canvas.toDataURL('image/jpeg');
         setCapturedImage(dataUrl);
 
-        // OCR identification simulation on image
-        const detected = errorCode || 'F30002 / DC-BUS';
-        setOcrDetectedCode(detected);
-        if (!errorCode) setErrorCode(detected);
+        setOcrDetectedCode(null);
       }
       stopCamera();
     }
@@ -272,11 +283,83 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
       const reader = new FileReader();
       reader.onload = () => {
         setCapturedImage(reader.result as string);
-        const detected = errorCode || 'ALM-8821-OK';
-        setOcrDetectedCode(detected);
-        if (!errorCode) setErrorCode(detected);
+        setOcrDetectedCode(null);
       };
       reader.readAsDataURL(file);
+    }
+  };
+
+  const shrinkImage = (dataUrl: string, max = 1280): Promise<string> =>
+    new Promise((resolve) => {
+      if (!dataUrl.startsWith('data:image/')) return resolve('');
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale);
+        c.height = Math.round(img.height * scale);
+        c.getContext('2d')?.drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = () => resolve('');
+      img.src = dataUrl;
+    });
+
+  const handleAnalyzeAI = async () => {
+    setAiLoading(true);
+    setAiNotice(null);
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+      const image = capturedImage ? await shrinkImage(capturedImage) : '';
+      const r = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          lang: language,
+          machineName: resolvedMachineName,
+          manufacturer: currentSelectedMachine?.manufacturer,
+          model: currentSelectedMachine?.model,
+          machineType: currentSelectedMachine?.sector,
+          errorCode,
+          symptom,
+          tests: tasks.map((tk) => ({ title: tk.title, result: tk.result })),
+          image,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (j.mode === 'demo') {
+        setAiNotice('Modo demonstração: a IA ainda não está ativada nesta conta. O plano abaixo vem do motor de regras DK.');
+        return;
+      }
+      if (!r.ok || !j.result) {
+        setAiNotice('Não foi possível falar com a IA agora. O plano do motor de regras continua disponível.');
+        return;
+      }
+      const o = j.result;
+      setDiagnosticPlan((prev) => ({
+        ...prev,
+        categoryLabel: 'IA',
+        probableCause: o.causa_probable || prev.probableCause,
+        rootCauseHypothesis: o.hipotesis_raiz || prev.rootCauseHypothesis,
+        recommendedAction: o.accion_recomendada || prev.recommendedAction,
+        actionPlan: Array.isArray(o.plan_accion) && o.plan_accion.length ? o.plan_accion : prev.actionPlan,
+      }));
+      if (Array.isArray(o.tests) && o.tests.length) {
+        setTasks(o.tests.map((x: any, i: number) => ({
+          id: `ai-${Date.now()}-${i}`, title: x.title, description: x.description, method: x.method, expected: x.expected, result: 'untested' as const,
+        })));
+        setHasUserCustomizedTasks(false);
+      }
+      setAiSource('ai');
+      setAiConfidence(o.confianza || null);
+      setAiAnalysis(o.analisis || '');
+      setOcrDetectedCode(o.codigo_visto ? String(o.codigo_visto) : null);
+    } catch (e) {
+      console.error(e);
+      setAiNotice('Sem conexão com a IA. O plano do motor de regras continua disponível.');
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -313,8 +396,9 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
       })),
       aiAnalysis: {
         rootCause: failureToExport.probableCause || diagnosticPlan.probableCause,
-        confidenceLevel: 'ALTA CONFIABILIDADE (96.8%)',
-        confidenceScore: 96.8,
+        confidenceLevel: aiSource === 'ai' && aiConfidence ? ({ ALTA: 'ALTA', MEDIA: 'MÉDIA', BAJA: 'BAIXA' } as const)[aiConfidence] : 'NÃO AVALIADA (motor de regras)',
+        source: aiSource,
+        fullAnalysis: aiSource === 'ai' ? aiAnalysis : undefined,
         aiSummary: diagnosticPlan.rootCauseHypothesis,
         actionPlan: diagnosticPlan.actionPlan,
       },
@@ -730,9 +814,16 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
                     <Sparkles className="w-4 h-4 text-cyan-400" />
                     <span className="font-bold text-white">{t('ocrResultTitle')}</span>
                   </div>
-                  <span className="font-mono font-black text-cyan-300 bg-slate-900 px-2 py-1 rounded border border-blue-700">
-                    {ocrDetectedCode}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-black text-cyan-300 bg-slate-900 px-2 py-1 rounded border border-blue-700">
+                      {ocrDetectedCode}
+                    </span>
+                    {ocrDetectedCode !== errorCode && (
+                      <button type="button" onClick={() => setErrorCode(ocrDetectedCode)} className="text-[11px] font-bold text-blue-300 hover:text-white underline cursor-pointer">
+                        Usar este código
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -782,7 +873,17 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
                     className="bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors cursor-pointer"
                   >
                     <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Regenerar com IA</span>
+                    <span>Regenerar (regras)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleAnalyzeAI}
+                    disabled={aiLoading}
+                    className="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-slate-950 px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>{aiLoading ? 'Analisando…' : 'Analisar com IA'}</span>
                   </button>
 
                   <button
@@ -795,6 +896,19 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
                   </button>
                 </div>
               </div>
+
+              {aiNotice && (
+                <div className="p-3 rounded-lg bg-amber-950/50 border border-amber-800 text-amber-200 text-xs">{aiNotice}</div>
+              )}
+              {aiSource === 'ai' && aiAnalysis && (
+                <details open className="p-3 rounded-lg bg-slate-950 border border-cyan-800/60 text-xs">
+                  <summary className="cursor-pointer font-bold text-cyan-300 flex items-center gap-2">
+                    Análise da IA • Confiança: {aiConfidence ?? '—'}
+                  </summary>
+                  <pre className="mt-2 whitespace-pre-wrap font-sans text-slate-200 leading-relaxed">{aiAnalysis}</pre>
+                  <p className="mt-2 text-[10px] text-slate-500">A IA sugere hipóteses. Confirme com os testes antes de trocar peças. Bloqueio e consignação (LOTO) antes de qualquer teste elétrico.</p>
+                </details>
+              )}
 
               {/* Dynamic Live Sync Bar in Guided Stage */}
               <div className="p-3 bg-slate-900/90 rounded-xl border border-cyan-800/60 shadow-lg space-y-2">
@@ -1036,8 +1150,8 @@ export const DiagnosticModal: React.FC<DiagnosticModalProps> = ({
                       {diagnosticPlan.categoryLabel}
                     </span>
                   </span>
-                  <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/40 font-bold">
-                    IA APROVADA
+                  <span className={`text-[10px] px-2 py-0.5 rounded border font-bold ${aiSource === 'ai' ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' : 'bg-slate-700/40 text-slate-300 border-slate-600'}`}>
+                    {aiSource === 'ai' ? `IA • CONFIANÇA ${aiConfidence ?? '—'}` : 'MOTOR DE REGRAS (SEM IA)'}
                   </span>
                 </div>
 
